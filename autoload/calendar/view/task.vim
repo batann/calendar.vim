@@ -1,0 +1,111 @@
+" =============================================================================
+" Filename: autoload/calendar/view/task.vim
+" Author: itchyny
+" License: MIT License
+" Last Change: 2022/12/11 11:34:29.
+" =============================================================================
+
+let s:save_cpo = &cpo
+set cpo&vim
+
+function! calendar#view#task#new(source) abort
+  return s:constructor.new(a:source)
+endfunction
+
+let s:self = {}
+
+let s:self._select_line = 1
+
+function! s:self.get_key() dict abort
+  return b:calendar.task.updated()
+endfunction
+
+function! s:self.get_raw_contents() dict abort
+  return b:calendar.task.get_task()
+endfunction
+
+function! s:self.action(action) dict abort
+  let task = self.current_contents()
+  let taskid = get(task, 'id', '')
+  let prevtask = self.prev_contents()
+  let prevtaskid = get(prevtask, 'id', '')
+  if index(['delete', 'delete_line'], a:action) >= 0
+    if calendar#setting#get('yank_deleting')
+      call self.yank()
+    endif
+    if calendar#setting#get('task_delete')
+      if calendar#setting#get('skip_task_delete_confirm') || input(calendar#message#get('delete_task')) =~# '\c^y\%[es]$'
+        call b:calendar.task.delete(self.current_group_id(), taskid)
+      endif
+    else
+      call b:calendar.task.complete(self.current_group_id(), taskid)
+    endif
+  elseif index(['undo_line'], a:action) >= 0
+    call b:calendar.task.uncomplete(self.current_group_id(), taskid)
+  elseif index(['move_down', 'move_up'], a:action) >= 0
+    let previoustask = a:action ==# 'move_down' ? self.next_contents() : self.prevprev_contents()
+    if get(previoustask, 'id', '') !=# '' || a:action ==# 'move_up'
+      if has_key(task, 'parent') && task.parent !=# get(previoustask, 'parent', get(previoustask, 'id', ''))
+        return
+      endif
+      let previoustaskid = get(task, 'parent', '') ==# get(previoustask, 'id', '') ? '' : get(previoustask, 'id', '')
+      call b:calendar.task.move(self.current_group_id(), taskid, previoustaskid, get(task, 'parent', ''))
+      let self.select += a:action ==# 'move_up' ? -1 : 1
+    endif
+  elseif index(['start_insert', 'start_insert_append', 'start_insert_head', 'start_insert_last', 'change', 'change_line'], a:action) >= 0
+    if taskid !=# ''
+      let head = index(['start_insert', 'start_insert_head'], a:action) >= 0
+      let change = index(['change', 'change_line'], a:action) >= 0
+      let msg = calendar#message#get('input_task') . (change ? get(task, 'title', '') . ' -> ' : '')
+      let title = input(msg, change ? '' : get(task, 'title', '') . (head ? "\<Home>" : ''))
+      if title !=# ''
+        let [title, due] = calendar#view#task#parse_title(title)
+        call b:calendar.task.update(self.current_group_id(), taskid, title, due ==# '' ? {} : { 'due': due })
+      endif
+    else
+      return self.action('start_insert_next_line')
+    endif
+  elseif index(['start_insert_next_line', 'start_insert_prev_line'], a:action) >= 0
+    let title = input(calendar#message#get('input_task'))
+    if title !=# ''
+      let next = a:action ==# 'start_insert_next_line'
+      if next
+        let self.select += 1
+      endif
+      let [title, due] = calendar#view#task#parse_title(title)
+      call b:calendar.task.insert(self.current_group_id(),
+            \ next ? taskid : !has_key(task, 'parent') || has_key(prevtask, 'parent') ? prevtaskid : '',
+            \ get(next ? task : !has_key(task, 'parent') || has_key(prevtask, 'parent') ? prevtask : task, 'parent', ''),
+            \ title, due ==# '' ? {} : { 'due': due })
+    endif
+  elseif a:action ==# 'clear'
+    if calendar#setting#get('skip_task_clear_completed_confirm') || input(calendar#message#get('clear_completed_task')) =~# '\c^y\%[es]$'
+      call b:calendar.task.clear_completed(self.current_group_id())
+    endif
+  else
+    return self._action(a:action)
+  endif
+endfunction
+
+function! calendar#view#task#parse_title(title) abort
+  let title = a:title
+  let due = ''
+  if title =~# '\v^\s*%((\d+)[-/])?(\d+)[-/](\d+)\s+'
+    let endian = calendar#setting#get('date_endian')
+    let [_, y, m, d, title; __] = matchlist(title, '\v^\s*%((\d+)[-/])?(\d+)[-/](\d+)\s+(.*)')
+    if y ==# ''
+      let [year, month, _] = b:calendar.day().get_ymd()
+      let [y, m, d] = endian ==# 'little' ? [year, d, m] : [year, m, d]
+      let y = m < month ? y + 1 : y
+    else
+      let [y, m, d] = endian ==# 'little' ? [d, m, y] : endian ==# 'middle' ? [d, y, m] : [y, m, d]
+    endif
+    let due = printf('%d-%02d-%02d', y, m, d)
+  endif
+  return [title, due !=# '' ? due . 'T00:00:00Z' : '']
+endfunction
+
+let s:constructor = calendar#constructor#view_textbox#new(s:self)
+
+let &cpo = s:save_cpo
+unlet s:save_cpo
